@@ -185,19 +185,166 @@ func ParseReaderNative(content io.Reader) (*SiteMapOrURLSet, error) {
 	return &u, nil
 }
 
+type parseLevel int
+
+const (
+	root parseLevel = iota
+	urlset
+	url
+	loc
+	lastmod
+	priority
+	changefreq
+)
+
 func ParseReaderOptimized(content io.Reader) (*SiteMapOrURLSet, error) {
-	bs := make([]byte, 64)
+	bs := make([]byte, 512)
 	n, err := content.Read(bs)
+	currentParseLevel := root
+	contentStart := -1
+	var currentURLSet URLSet
+	var currentURL *URL
 	for err == nil {
 		//fmt.Printf("%q, %d, %s\n", string(bs[:n]), n, err)
 		for i := 0; i < n; i++ {
 			switch bs[i] {
 			case '\n', '\t', ' ':
 				continue
-			//case '<':
-			//	fmt.Println(bs[i])
+			case '<':
+				// [/] urlset, url, loc, lastmod, priority, changefreq
+				switch currentParseLevel {
+				case root:
+					if string(bs[i+1:i+8]) != "urlset>" {
+						return nil, fmt.Errorf("unexpected tag at position %d", i+1)
+					}
+					currentURLSet = URLSet{}
+					currentParseLevel = urlset
+					i += 7
+				case urlset:
+					if string(bs[i+1:i+5]) == "url>" {
+						currentURL = &URL{}
+						currentParseLevel = url
+						i += 4
+					} else if string(bs[i+1:i+9]) == "/urlset>" {
+						currentParseLevel = root
+						i += 8
+					} else {
+						return nil, fmt.Errorf("unexpected tag at position %d", i+1)
+					}
+				case url:
+					switch bs[i+2] {
+					case 'o': // loc
+						if string(bs[i+1:i+5]) != "loc>" {
+							return nil, fmt.Errorf("unexpected tag at position %d, expected 'loc'", i+1)
+						}
+						contentStart = i + 5
+						currentParseLevel = loc
+						i += 4
+					case 'a': // lastmod
+						if string(bs[i+1:i+9]) != "lastmod>" {
+							return nil, fmt.Errorf("unexpected tag at position %d, expected 'lastmod'", i+1)
+						}
+						contentStart = i + 9
+						currentParseLevel = lastmod
+						i += 8
+					case 'r': // priority
+						if string(bs[i+1:i+10]) != "priority>" {
+							return nil, fmt.Errorf("unexpected tag at position %d, expected 'priority'", i+1)
+						}
+						contentStart = i + 10
+						currentParseLevel = priority
+						i += 9
+					case 'h': // changefreq
+						if string(bs[i+1:i+12]) != "changefreq>" {
+							return nil, fmt.Errorf("unexpected tag at position %d, expected 'changefreq'", i+1)
+						}
+						contentStart = i + 12
+						currentParseLevel = changefreq
+						i += 11
+					case 'u': // close the url element
+						if string(bs[i+1:i+6]) != "/url>" {
+							return nil, fmt.Errorf("unexpected tag at position %d, expected 'changefreq'", i+1)
+						}
+						currentURLSet.Urls = append(currentURLSet.Urls, *currentURL)
+						currentURL = nil
+						currentParseLevel = urlset
+						i += 5
+					default:
+						return nil, fmt.Errorf("unexpected tag at position %d", i+1)
+					}
+				case loc:
+					if string(bs[i+1:i+6]) != "/loc>" {
+						return nil, fmt.Errorf("unexpected tag at position %d, expected '</loc>'", i+1)
+					}
+					currentURL.Loc = string(bs[contentStart:i])
+					currentParseLevel = url
+					i += 5
+				case changefreq:
+					if string(bs[i+1:i+13]) != "/changefreq>" {
+						return nil, fmt.Errorf("unexpected tag at position %d, expected '</changefreq>'", i+1)
+					}
+
+					switch string(bs[contentStart:i]) {
+					case "always":
+						currentURL.Changefreq = ALWAYS
+					case "hourly":
+						currentURL.Changefreq = HOURLY
+					case "daily":
+						currentURL.Changefreq = DAILY
+					case "weekly":
+						currentURL.Changefreq = WEEKLY
+					case "monthly":
+						currentURL.Changefreq = MONTHLY
+					case "yearly":
+						currentURL.Changefreq = YEARLY
+					case "never":
+						currentURL.Changefreq = NEVER
+					default:
+						currentURL.Changefreq = UKNOWN
+					}
+					currentParseLevel = url
+					i += 12
+				case priority:
+					if string(bs[i+1:i+11]) != "/priority>" {
+						return nil, fmt.Errorf("unexpected tag at position %d, expected '</priority>'", i+1)
+					}
+					f, err := strconv.ParseFloat(string(bs[contentStart:i]), 64)
+					if err != nil {
+						f = .5
+					}
+
+					if f < 0. {
+						f = 0.
+					}
+					if f > 1. {
+						f = 1.
+					}
+					if math.IsNaN(f) {
+						f = .5
+					}
+					currentURL.Priority = (*BoundedFloat64)(&f)
+					currentParseLevel = url
+					i += 10
+				case lastmod:
+					if string(bs[i+1:i+10]) != "/lastmod>" {
+						return nil, fmt.Errorf("unexpected tag at position %d, expected '</lastmod>'", i+1)
+					}
+
+					tt, err := time.Parse(formatISO3339NoMinutes, string(bs[contentStart:i]))
+					if err != nil {
+						return nil, fmt.Errorf("unexpected value %s for lastmod at position %d", string(bs[contentStart:i]), contentStart)
+					}
+
+					currentURL.Lastmod.Time = tt
+					currentParseLevel = url
+					i += 9
+				}
 			default:
-				fmt.Print(string(bs[i]))
+				switch currentParseLevel {
+				case root, urlset, url:
+					return nil, fmt.Errorf("unexpected character at position %d", i)
+				}
+				//fmt.Print(string(bs[i]))
 			}
 		}
 		n, err = content.Read(bs)
@@ -208,6 +355,7 @@ func ParseReaderOptimized(content io.Reader) (*SiteMapOrURLSet, error) {
 		return nil, err
 	}
 
-	var res SiteMapOrURLSet
-	return &res, nil
+	return &SiteMapOrURLSet{
+		URLs: currentURLSet.Urls,
+	}, nil
 }
