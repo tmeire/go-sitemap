@@ -197,25 +197,47 @@ const (
 	changefreq
 )
 
+const bufferSize = 4096
+const breakoutThreshold = 75
+
 func ParseReaderOptimized(content io.Reader) (*SiteMapOrURLSet, error) {
-	bs := make([]byte, 512)
+	bs := make([]byte, bufferSize)
 	n, err := content.Read(bs)
 	currentParseLevel := root
 	contentStart := -1
 	var currentURLSet URLSet
 	var currentURL *URL
+
+	currentCharacter := 1
+	currentLine := 1
 	for err == nil {
-		//fmt.Printf("%q, %d, %s\n", string(bs[:n]), n, err)
+		resetPosition := -1
 		for i := 0; i < n; i++ {
 			switch bs[i] {
-			case '\n', '\t', ' ':
+			case '\n':
+				currentLine++
+				currentCharacter = 1
+				continue
+			case '\r', '\t', ' ':
 				continue
 			case '<':
+				if i > (n*breakoutThreshold/100) && bs[i+1] != '/' {
+					fmt.Println("load more data", string(bs[i:n]))
+					resetPosition = i
+					break
+				}
 				// [/] urlset, url, loc, lastmod, priority, changefreq
 				switch currentParseLevel {
 				case root:
+					if bs[i+1] == '?' {
+						for j := i + 2; bs[j] != '?' && bs[j+1] != '>'; j++ {
+							i++
+						}
+						i += 3
+						break
+					}
 					if string(bs[i+1:i+8]) != "urlset>" {
-						return nil, fmt.Errorf("unexpected tag at position %d", i+1)
+						return nil, fmt.Errorf("unexpected tag at line %d : position %d", currentLine, currentCharacter)
 					}
 					currentURLSet = URLSet{}
 					currentParseLevel = urlset
@@ -229,59 +251,59 @@ func ParseReaderOptimized(content io.Reader) (*SiteMapOrURLSet, error) {
 						currentParseLevel = root
 						i += 8
 					} else {
-						return nil, fmt.Errorf("unexpected tag at position %d", i+1)
+						return nil, fmt.Errorf("unexpected tag at  line %d : position %d", currentLine, currentCharacter)
 					}
 				case url:
 					switch bs[i+2] {
 					case 'o': // loc
 						if string(bs[i+1:i+5]) != "loc>" {
-							return nil, fmt.Errorf("unexpected tag at position %d, expected 'loc'", i+1)
+							return nil, fmt.Errorf("unexpected tag at line %d : position %dexpected 'loc'", currentLine, currentCharacter)
 						}
 						contentStart = i + 5
 						currentParseLevel = loc
 						i += 4
 					case 'a': // lastmod
 						if string(bs[i+1:i+9]) != "lastmod>" {
-							return nil, fmt.Errorf("unexpected tag at position %d, expected 'lastmod'", i+1)
+							return nil, fmt.Errorf("unexpected tag at line %d : position %dexpected 'lastmod'", currentLine, currentCharacter)
 						}
 						contentStart = i + 9
 						currentParseLevel = lastmod
 						i += 8
 					case 'r': // priority
 						if string(bs[i+1:i+10]) != "priority>" {
-							return nil, fmt.Errorf("unexpected tag at position %d, expected 'priority'", i+1)
+							return nil, fmt.Errorf("unexpected tag at line %d : position %d, expected 'priority'", currentLine, currentCharacter)
 						}
 						contentStart = i + 10
 						currentParseLevel = priority
 						i += 9
 					case 'h': // changefreq
 						if string(bs[i+1:i+12]) != "changefreq>" {
-							return nil, fmt.Errorf("unexpected tag at position %d, expected 'changefreq'", i+1)
+							return nil, fmt.Errorf("unexpected tag at line %d : position %d, expected 'changefreq'", currentLine, currentCharacter)
 						}
 						contentStart = i + 12
 						currentParseLevel = changefreq
 						i += 11
 					case 'u': // close the url element
 						if string(bs[i+1:i+6]) != "/url>" {
-							return nil, fmt.Errorf("unexpected tag at position %d, expected 'changefreq'", i+1)
+							return nil, fmt.Errorf("unexpected tag at line %d : position %d, expected 'changefreq'", currentLine, currentCharacter)
 						}
 						currentURLSet.Urls = append(currentURLSet.Urls, *currentURL)
 						currentURL = nil
 						currentParseLevel = urlset
 						i += 5
 					default:
-						return nil, fmt.Errorf("unexpected tag at position %d", i+1)
+						return nil, fmt.Errorf("unexpected tag at line %d : position %d", currentLine, currentCharacter)
 					}
 				case loc:
 					if string(bs[i+1:i+6]) != "/loc>" {
-						return nil, fmt.Errorf("unexpected tag at position %d, expected '</loc>'", i+1)
+						return nil, fmt.Errorf("unexpected tag at line %d : position %d, expected '</loc>'", currentLine, currentCharacter)
 					}
 					currentURL.Loc = string(bs[contentStart:i])
 					currentParseLevel = url
 					i += 5
 				case changefreq:
 					if string(bs[i+1:i+13]) != "/changefreq>" {
-						return nil, fmt.Errorf("unexpected tag at position %d, expected '</changefreq>'", i+1)
+						return nil, fmt.Errorf("unexpected tag at line %d : position %d, expected '</changefreq>'", currentLine, currentCharacter)
 					}
 
 					switch string(bs[contentStart:i]) {
@@ -306,7 +328,7 @@ func ParseReaderOptimized(content io.Reader) (*SiteMapOrURLSet, error) {
 					i += 12
 				case priority:
 					if string(bs[i+1:i+11]) != "/priority>" {
-						return nil, fmt.Errorf("unexpected tag at position %d, expected '</priority>'", i+1)
+						return nil, fmt.Errorf("unexpected tag at line %d : position %d, expected '</priority>'", currentLine, currentCharacter)
 					}
 					f, err := strconv.ParseFloat(string(bs[contentStart:i]), 64)
 					if err != nil {
@@ -327,12 +349,12 @@ func ParseReaderOptimized(content io.Reader) (*SiteMapOrURLSet, error) {
 					i += 10
 				case lastmod:
 					if string(bs[i+1:i+10]) != "/lastmod>" {
-						return nil, fmt.Errorf("unexpected tag at position %d, expected '</lastmod>'", i+1)
+						return nil, fmt.Errorf("unexpected tag at line %d : position %d, expected '</lastmod>'", currentLine, currentCharacter)
 					}
 
 					tt, err := time.Parse(formatISO3339NoMinutes, string(bs[contentStart:i]))
 					if err != nil {
-						return nil, fmt.Errorf("unexpected value %s for lastmod at position %d", string(bs[contentStart:i]), contentStart)
+						return nil, fmt.Errorf("unexpected value %s for lastmod at line %d : position %d", string(bs[contentStart:i]), currentLine, (currentCharacter - i + contentStart))
 					}
 
 					currentURL.Lastmod.Time = tt
@@ -342,13 +364,21 @@ func ParseReaderOptimized(content io.Reader) (*SiteMapOrURLSet, error) {
 			default:
 				switch currentParseLevel {
 				case root, urlset, url:
-					return nil, fmt.Errorf("unexpected character at position %d", i)
+					return nil, fmt.Errorf("unexpected character %q at line %d : position %d", bs[i], currentLine, currentCharacter)
 				}
-				//fmt.Print(string(bs[i]))
 			}
+			if resetPosition != -1 {
+				break
+			}
+			currentCharacter++
 		}
-		n, err = content.Read(bs)
-		//fmt.Printf("%q, %d, %s", string(bs[:n]), n, err)
+		offset := 0
+		if resetPosition != -1 {
+			copy(bs, bs[resetPosition:n])
+			offset = n - resetPosition
+		}
+		n, err = content.Read(bs[offset:])
+		n += offset
 	}
 
 	if err != io.EOF {
