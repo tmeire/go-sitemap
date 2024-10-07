@@ -195,6 +195,8 @@ const (
 	lastmod
 	priority
 	changefreq
+	sitemapindex
+	sitemap
 )
 
 const bufferSize = 4096
@@ -207,6 +209,8 @@ func ParseReaderOptimized(content io.Reader) (*SiteMapOrURLSet, error) {
 	contentStart := -1
 	var currentURLSet URLSet
 	var currentURL *URL
+	var currentSitemaps SiteMaps
+	var currentSitemap *SiteMap
 
 	currentCharacter := 1
 	currentLine := 1
@@ -236,10 +240,18 @@ func ParseReaderOptimized(content io.Reader) (*SiteMapOrURLSet, error) {
 						i += 3
 						break
 					}
-					if string(bs[i+1:i+7]) != "urlset" {
+					if string(bs[i+1:i+7]) == "urlset" {
+						i += 6
+						currentURLSet = URLSet{}
+						currentParseLevel = urlset
+					} else if string(bs[i+1:i+13]) == "sitemapindex" {
+						i += 12
+						currentSitemaps = SiteMaps{}
+						currentParseLevel = sitemapindex
+					} else {
 						return nil, fmt.Errorf("unexpected tag at line %d : position %d", currentLine, currentCharacter)
 					}
-					i += 6
+
 					if bs[i+1] != '>' {
 						// <urlset xmlns="..." ...>
 						for j := i + 1; bs[j] != '>'; j++ {
@@ -248,8 +260,44 @@ func ParseReaderOptimized(content io.Reader) (*SiteMapOrURLSet, error) {
 						}
 					}
 					i++ // add one more for the >
-					currentURLSet = URLSet{}
-					currentParseLevel = urlset
+				case sitemapindex:
+					if string(bs[i+1:i+9]) == "sitemap>" {
+						currentSitemap = &SiteMap{}
+						currentParseLevel = sitemap
+						i += 8
+					} else if string(bs[i+1:i+15]) == "/sitemapindex>" {
+						currentParseLevel = root
+						i += 14
+					} else {
+						return nil, fmt.Errorf("unexpected tag at line %d : position %d", currentLine, currentCharacter)
+					}
+				case sitemap:
+					switch bs[i+2] {
+					case 'o': // loc
+						if string(bs[i+1:i+5]) != "loc>" {
+							return nil, fmt.Errorf("unexpected tag at line %d : position %dexpected 'loc'", currentLine, currentCharacter)
+						}
+						contentStart = i + 5
+						currentParseLevel = loc
+						i += 4
+					case 'a': // lastmod
+						if string(bs[i+1:i+9]) != "lastmod>" {
+							return nil, fmt.Errorf("unexpected tag at line %d : position %dexpected 'lastmod'", currentLine, currentCharacter)
+						}
+						contentStart = i + 9
+						currentParseLevel = lastmod
+						i += 8
+					case 's': // close the sitemap element
+						if string(bs[i+1:i+10]) != "/sitemap>" {
+							return nil, fmt.Errorf("unexpected tag at line %d : position %d, expected '</sitemap>'", currentLine, currentCharacter)
+						}
+						currentSitemaps.Maps = append(currentSitemaps.Maps, *currentSitemap)
+						currentSitemap = nil
+						currentParseLevel = sitemapindex
+						i += 9
+					default:
+						return nil, fmt.Errorf("unexpected tag at line %d : position %d", currentLine, currentCharacter)
+					}
 				case urlset:
 					if string(bs[i+1:i+5]) == "url>" {
 						currentURL = &URL{}
@@ -259,7 +307,7 @@ func ParseReaderOptimized(content io.Reader) (*SiteMapOrURLSet, error) {
 						currentParseLevel = root
 						i += 8
 					} else {
-						return nil, fmt.Errorf("unexpected tag at  line %d : position %d", currentLine, currentCharacter)
+						return nil, fmt.Errorf("unexpected tag at line %d : position %d", currentLine, currentCharacter)
 					}
 				case url:
 					switch bs[i+2] {
@@ -293,7 +341,7 @@ func ParseReaderOptimized(content io.Reader) (*SiteMapOrURLSet, error) {
 						i += 11
 					case 'u': // close the url element
 						if string(bs[i+1:i+6]) != "/url>" {
-							return nil, fmt.Errorf("unexpected tag at line %d : position %d, expected 'changefreq'", currentLine, currentCharacter)
+							return nil, fmt.Errorf("unexpected tag at line %d : position %d, expected '</url>'", currentLine, currentCharacter)
 						}
 						currentURLSet.Urls = append(currentURLSet.Urls, *currentURL)
 						currentURL = nil
@@ -306,8 +354,13 @@ func ParseReaderOptimized(content io.Reader) (*SiteMapOrURLSet, error) {
 					if string(bs[i+1:i+6]) != "/loc>" {
 						return nil, fmt.Errorf("unexpected tag at line %d : position %d, expected '</loc>'", currentLine, currentCharacter)
 					}
-					currentURL.Loc = string(bs[contentStart:i])
-					currentParseLevel = url
+					if currentURL != nil {
+						currentURL.Loc = string(bs[contentStart:i])
+						currentParseLevel = url
+					} else {
+						currentSitemap.Loc = string(bs[contentStart:i])
+						currentParseLevel = sitemap
+					}
 					i += 5
 				case changefreq:
 					if string(bs[i+1:i+13]) != "/changefreq>" {
@@ -365,13 +418,18 @@ func ParseReaderOptimized(content io.Reader) (*SiteMapOrURLSet, error) {
 						return nil, fmt.Errorf("unexpected value %s for lastmod at line %d : position %d", string(bs[contentStart:i]), currentLine, (currentCharacter - i + contentStart))
 					}
 
-					currentURL.Lastmod.Time = tt
-					currentParseLevel = url
+					if currentURL != nil {
+						currentURL.Lastmod.Time = tt
+						currentParseLevel = url
+					} else {
+						currentSitemap.Lastmod.Time = tt
+						currentParseLevel = sitemap
+					}
 					i += 9
 				}
 			default:
 				switch currentParseLevel {
-				case root, urlset, url:
+				case root, urlset, url, sitemapindex, sitemap:
 					return nil, fmt.Errorf("unexpected character %q at line %d : position %d", bs[i], currentLine, currentCharacter)
 				}
 			}
@@ -395,5 +453,6 @@ func ParseReaderOptimized(content io.Reader) (*SiteMapOrURLSet, error) {
 
 	return &SiteMapOrURLSet{
 		URLs: currentURLSet.Urls,
+		Maps: currentSitemaps.Maps,
 	}, nil
 }

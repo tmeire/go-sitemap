@@ -17,21 +17,21 @@ func TestParseSiteMapOrURLSet(t *testing.T) {
 		file   string
 		verify func(t *testing.T, s gositemap.SiteMapOrURLSet)
 	}{
-		// {
-		// 	"./testdata/vtm-sitemap.xml",
-		// 	func(t *testing.T, s gositemap.SiteMapOrURLSet) {
-		// 		assert.NotNil(t, s.Maps)
-		// 		assert.Nil(t, s.URLs)
+		{
+			"./testdata/vtm-sitemap.xml",
+			func(t *testing.T, s gositemap.SiteMapOrURLSet) {
+				assert.NotNil(t, s.Maps)
+				assert.Nil(t, s.URLs)
 
-		// 		assert.Len(t, s.Maps, 2)
+				assert.Len(t, s.Maps, 2)
 
-		// 		assert.Equal(t, "https://koken.vtm.be/sitemap.xml?page=1", s.Maps[0].Loc)
-		// 		assert.Equal(t, "2024-02-23T08:20:00Z", s.Maps[0].Lastmod.Format(time.RFC3339))
+				assert.Equal(t, "https://koken.vtm.be/sitemap.xml?page=1", s.Maps[0].Loc)
+				assert.Equal(t, "2024-02-23T08:20:00Z", s.Maps[0].Lastmod.Format(time.RFC3339))
 
-		// 		assert.Equal(t, "https://koken.vtm.be/sitemap.xml?page=2", s.Maps[1].Loc)
-		// 		assert.Equal(t, "2024-02-23T08:20:00Z", s.Maps[1].Lastmod.Format(time.RFC3339))
-		// 	},
-		// },
+				assert.Equal(t, "https://koken.vtm.be/sitemap.xml?page=2", s.Maps[1].Loc)
+				assert.Equal(t, "2024-02-23T08:20:00Z", s.Maps[1].Lastmod.Format(time.RFC3339))
+			},
+		},
 		{
 			"./testdata/vtm-page-1.xml",
 			func(t *testing.T, s gositemap.SiteMapOrURLSet) {
@@ -208,7 +208,24 @@ func TestURL(t *testing.T) {
 	}
 }
 
-func BenchmarkFullFiles(b *testing.B) {
+func BenchmarkFullFiles_Native(b *testing.B) {
+	files := []string{
+		"./testdata/vtm-page-1.xml",
+		"./testdata/vtm-page-2.xml",
+	}
+	for i := 0; i < b.N; i++ {
+		for _, file := range files {
+			f, err := os.Open(file)
+			if err != nil {
+				panic(err)
+			}
+
+			_, _ = gositemap.ParseReaderNative(f)
+		}
+	}
+}
+
+func BenchmarkFullFiles_Optimized(b *testing.B) {
 	files := []string{
 		"./testdata/vtm-page-1.xml",
 		"./testdata/vtm-page-2.xml",
