@@ -210,7 +210,7 @@ func ParseReaderOptimized(content io.Reader) (*SiteMapOrURLSet, error) {
 
 	currentCharacter := 1
 	currentLine := 1
-	for err == nil {
+	for n > 0 {
 		resetPosition := -1
 		for i := 0; i < n; i++ {
 			switch bs[i] {
@@ -222,7 +222,6 @@ func ParseReaderOptimized(content io.Reader) (*SiteMapOrURLSet, error) {
 				continue
 			case '<':
 				if i > (n*breakoutThreshold/100) && bs[i+1] != '/' {
-					fmt.Println("load more data", string(bs[i:n]))
 					resetPosition = i
 					break
 				}
@@ -231,17 +230,26 @@ func ParseReaderOptimized(content io.Reader) (*SiteMapOrURLSet, error) {
 				case root:
 					if bs[i+1] == '?' {
 						for j := i + 2; bs[j] != '?' && bs[j+1] != '>'; j++ {
+							currentCharacter++
 							i++
 						}
 						i += 3
 						break
 					}
-					if string(bs[i+1:i+8]) != "urlset>" {
+					if string(bs[i+1:i+7]) != "urlset" {
 						return nil, fmt.Errorf("unexpected tag at line %d : position %d", currentLine, currentCharacter)
 					}
+					i += 6
+					if bs[i+1] != '>' {
+						// <urlset xmlns="..." ...>
+						for j := i + 1; bs[j] != '>'; j++ {
+							currentCharacter++
+							i++
+						}
+					}
+					i++ // add one more for the >
 					currentURLSet = URLSet{}
 					currentParseLevel = urlset
-					i += 7
 				case urlset:
 					if string(bs[i+1:i+5]) == "url>" {
 						currentURL = &URL{}
